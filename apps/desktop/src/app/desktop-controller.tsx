@@ -108,6 +108,7 @@ const CommandCenterView = lazy(async () => ({ default: (await import('./command-
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
 const MessagingView = lazy(async () => ({ default: (await import('./messaging')).MessagingView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
+const RemoteHermesView = lazy(async () => ({ default: (await import('./remote-hermes')).RemoteHermesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
 
@@ -909,6 +910,14 @@ export function DesktopController() {
               </Suspense>
             }
             path="artifacts"
+          />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <RemoteHermesView />
+              </Suspense>
+            }
+            path="remote-hermes"
           />
           <Route element={null} path="cron" />
           <Route element={null} path="profiles" />

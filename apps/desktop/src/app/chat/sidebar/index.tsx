@@ -18,6 +18,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -78,7 +79,7 @@ import {
   sessionPinId
 } from '@/store/session'
 
-import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
+import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, REMOTE_HERMES_ROUTE, SKILLS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
@@ -109,10 +110,13 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     route: SKILLS_ROUTE
   },
   { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
-  { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
+  { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE },
+  { id: 'remote-hermes', label: 'Remote Hermes', icon: props => <Codicon name="globe" {...props} />, route: REMOTE_HERMES_ROUTE }
 ]
 
 const WORKSPACE_PAGE = 5
+const REMOTE_HERMES_SESSION_EVENT = 'remote-hermes:sessions'
+const REMOTE_HERMES_SELECT_EVENT = 'remote-hermes:select-session'
 // ALL-profiles view: show only the latest N per profile up front to keep the
 // unified list scannable, then reveal/fetch more in N-sized steps on demand.
 const PROFILE_INITIAL_PAGE = 5
@@ -122,6 +126,23 @@ const wsId = (id: string) => `${WS_ID_PREFIX}${id}`
 const parseWsId = (id: string) => (id.startsWith(WS_ID_PREFIX) ? id.slice(WS_ID_PREFIX.length) : null)
 const countLabel = (loaded: number, total: number) => (total > loaded ? `${loaded}/${total}` : String(loaded))
 const sessionTime = (s: SessionInfo) => s.last_active || s.started_at || 0
+
+interface RemoteHermesSidebarSession {
+  id: string
+  last_active?: null | number | string
+  message_count?: null | number
+  model?: null | string
+  remote_model?: null | string
+  remote_profile?: null | string
+  remote_provider?: null | string
+  title?: null | string
+}
+
+interface RemoteHermesSessionsEvent extends Event {
+  detail?: {
+    sessions?: RemoteHermesSidebarSession[]
+  }
+}
 
 function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: string[]): T[] {
   if (!orderIds.length) {
@@ -246,6 +267,7 @@ export function ChatSidebar({
 }: ChatSidebarProps) {
   const { t } = useI18n()
   const s = t.sidebar
+  const navigate = useNavigate()
   const sidebarOpen = useStore($sidebarOpen)
   const panesFlipped = useStore($panesFlipped)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
@@ -276,6 +298,9 @@ export function ChatSidebar({
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
   const [profileLoadMorePending, setProfileLoadMorePending] = useState<Record<string, boolean>>({})
+  const [remoteHermesOpen, setRemoteHermesOpen] = useState(true)
+  const [remoteHermesSessions, setRemoteHermesSessions] = useState<RemoteHermesSidebarSession[]>([])
+  const [remoteHermesSelectedSessionId, setRemoteHermesSelectedSessionId] = useState<string | null>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const trimmedQuery = searchQuery.trim()
 
@@ -286,6 +311,30 @@ export function ChatSidebar({
     window.addEventListener(SESSION_SEARCH_FOCUS_EVENT, onFocus)
 
     return () => window.removeEventListener(SESSION_SEARCH_FOCUS_EVENT, onFocus)
+  }, [])
+
+  // The Remote Hermes plugin owns remote connectivity and only emits this event
+  // after the user explicitly connects. The sidebar consumes that in-memory
+  // list so we get a native-looking section without auto-connecting on Desktop
+  // startup or duplicating the plugin's token/config handling here.
+  useEffect(() => {
+    const onRemoteSessions = (event: Event) => {
+      const sessions = (event as RemoteHermesSessionsEvent).detail?.sessions
+
+      if (!Array.isArray(sessions)) {
+        return
+      }
+
+      setRemoteHermesSessions(
+        sessions
+          .filter(session => session && typeof session.id === 'string' && session.id)
+          .slice(0, 20)
+      )
+    }
+
+    window.addEventListener(REMOTE_HERMES_SESSION_EVENT, onRemoteSessions)
+
+    return () => window.removeEventListener(REMOTE_HERMES_SESSION_EVENT, onRemoteSessions)
   }, [])
 
   // Flash the ⌘N hint full-opacity (no transition) for the press, so hitting
@@ -594,7 +643,8 @@ export function ChatSidebar({
                 const active =
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
-                  (item.id === 'artifacts' && currentView === 'artifacts')
+                  (item.id === 'artifacts' && currentView === 'artifacts') ||
+                  (item.id === 'remote-hermes' && currentView === 'remote-hermes')
 
                 const isNewSession = item.id === 'new-session'
 
@@ -776,6 +826,20 @@ export function ChatSidebar({
           />
         )}
 
+        {sidebarOpen && !trimmedQuery && remoteHermesSessions.length > 0 && (
+          <RemoteHermesSessionsSection
+            activeSessionId={currentView === 'remote-hermes' ? remoteHermesSelectedSessionId : null}
+            onOpenSession={sessionId => {
+              setRemoteHermesSelectedSessionId(sessionId)
+              navigate(`${REMOTE_HERMES_ROUTE}?session=${encodeURIComponent(sessionId)}`)
+              window.dispatchEvent(new CustomEvent(REMOTE_HERMES_SELECT_EVENT, { detail: { sessionId } }))
+            }}
+            onToggle={() => setRemoteHermesOpen(!remoteHermesOpen)}
+            open={remoteHermesOpen}
+            sessions={remoteHermesSessions}
+          />
+        )}
+
         {sidebarOpen && !trimmedQuery && cronJobs.length > 0 && (
           <SidebarCronJobsSection
             jobs={cronJobs}
@@ -797,6 +861,88 @@ export function ChatSidebar({
         )}
       </SidebarContent>
     </Sidebar>
+  )
+}
+
+function remoteHermesSessionTitle(session: RemoteHermesSidebarSession): string {
+  const title = session.title?.trim()
+
+  return title || session.id
+}
+
+function RemoteHermesSessionsSection({
+  activeSessionId,
+  onOpenSession,
+  onToggle,
+  open,
+  sessions
+}: {
+  activeSessionId: null | string
+  onOpenSession: (sessionId: string) => void
+  onToggle: () => void
+  open: boolean
+  sessions: RemoteHermesSidebarSession[]
+}) {
+  return (
+    <SidebarGroup className="shrink-0 p-0 pb-1">
+      <SidebarSectionHeader label="Remote Hermes" meta={String(sessions.length)} onToggle={onToggle} open={open} />
+      {open && (
+        <SidebarGroupContent className="flex max-h-44 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75">
+          {sessions.map(session => (
+            <RemoteHermesSessionRow
+              active={session.id === activeSessionId}
+              key={session.id}
+              onOpen={() => onOpenSession(session.id)}
+              session={session}
+            />
+          ))}
+        </SidebarGroupContent>
+      )}
+    </SidebarGroup>
+  )
+}
+
+function RemoteHermesSessionRow({
+  active,
+  onOpen,
+  session
+}: {
+  active: boolean
+  onOpen: () => void
+  session: RemoteHermesSidebarSession
+}) {
+  const title = remoteHermesSessionTitle(session)
+  const count = typeof session.message_count === 'number' ? session.message_count : null
+  const model = String(session.remote_model || session.model || '').trim()
+  const profile = String(session.remote_profile || '').trim()
+  const provider = String(session.remote_provider || '').trim()
+  const metadata = [profile && `profile: ${profile}`, model && `model: ${provider ? `${provider}/${model}` : model}`].filter(Boolean)
+  const tooltip = [title, session.id, ...metadata].join(' · ')
+
+  return (
+    <div
+      className={cn(
+        'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
+        active && 'bg-(--ui-row-active-background)'
+      )}
+    >
+      <button
+        className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left"
+        onClick={onOpen}
+        title={tooltip}
+        type="button"
+      >
+        <span className="grid w-3.5 shrink-0 place-items-center overflow-hidden text-(--ui-text-quaternary)">
+          <Codicon name="globe" size="0.6875rem" />
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground">
+          {title}
+        </span>
+      </button>
+      <span className="pointer-events-none pr-1 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+        {count == null ? '' : count}
+      </span>
+    </div>
   )
 }
 
